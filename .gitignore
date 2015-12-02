@@ -1,28 +1,16 @@
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
+ui_*.h
+!ui_qaxselect.h
+Build/
+Debug/
+Release/
+Release-CorrelationOnly/
+GeneratedFiles/
+ipch
+*.ncb
+*.suo
+*.sdf
+*.opensdf
+*.user
+*.vspscc
+*.aps
+MID.vcxproj.user

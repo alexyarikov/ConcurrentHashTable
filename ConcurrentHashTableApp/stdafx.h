@@ -5,3 +5,4 @@
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <sstream>
