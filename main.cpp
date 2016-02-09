@@ -1,21 +1,18 @@
-#include <iostream>
-
-using namespace std;
+#include "stdafx.h"
+#include "ConcurrentHashTable.h"
 
 int main()
 {
-    ConcurrentHashTable<std::string, std::string> hash_table;
+    ConcurrentHashTable<size_t, std::string> hash_table;
 
     for (size_t i = 0; i < 1000000; ++i)
     {
-        std::ostringstream key, val;
-        key << "key " << i;
+        std::stringstream val;
         val << "val " << i;
-
-        std::string key_str = key.str();
         std::string val_str = val.str();
 
-        hash_table[key_str];
+        size_t size = hash_table.size();
+        hash_table[i] = val_str;
     }
 
     return 0;

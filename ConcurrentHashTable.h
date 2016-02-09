@@ -3,63 +3,73 @@
 template <class KeyType, class ValType>
 class ConcurrentHashTable
 {
-public:
-    // constructor/destructor
-    ConcurrentHashTable(size_t capacity = 31, double load_factor = 0.5);
-    ~ConcurrentHashTable();
-
+private:
+    // hash table value class, intended to implement hash table [] operator
+    // (to distinguish which action, either read or write, is performed under hashtable value)
     template <class KeyType, class ValType>
     class HashTableValue
     {
     public:
-        HashTableValue(ConcurrentHashTable<KeyType, ValType>& hash_table, KeyType& key)
+        HashTableValue(ConcurrentHashTable<KeyType, ValType>* hash_table, const KeyType* key)
         {
-            m_hash_table = parent;
-            m_key = key;
+            printf("HashTableValue\r\n");
+            m_hash_table = hash_table; m_key = key;
+        }
+        ~HashTableValue()
+        {
+            printf("~HashTableValue\r\n");
         }
 
-        operator ValType() const
+        operator ValType() const { ValueType& val = m_hash_table->at(*m_key); }
+        HashTableValue& operator = (ValType const& val)
         {
-            ValueType& val = hash_table.at(key);
+            printf("HashTableValue& operator\r\n");
+            m_hash_table->insert(*m_key, val); return *this;
         }
-
-        HashTableValue& operator = (ValType const &val)
-        {
-            hash_table.insert(key, val);
-            return *this;
-        }
+        // move constructor to avoid HashTableValue local object destruction in hashtable [] operator
+        //HashTableValue(HashTableValue&& other)
+        //{
+        //    cout << "move constructor\r\n" << endl;
+        //    m_hash_table = other.m_hash_table;  m_key = other.m_key;
+        //    other.m_hash_table = nullptr;       other.m_key = nullptr;
+        //}
 
     private:
-        HashTableValue<KeyType, ValType>& m_hash_table;
-        KeyType m_key;
+        ConcurrentHashTable<KeyType, ValType>* m_hash_table;
+        const KeyType* m_key;
     };
 
-
-    // get methods
-    size_t size() const { return m_size; }
-    ValType& at(const KeyType &key);
-
-    // set methods
-    void insert(const KeyType& key, const ValType& val);
-    void erase(const KeyType& key);
-    void clear();
-    HathTableValue& operator [](const KeyType &key) { return HashTableValue(*this, key); }
-
-private:
-    // item structure
+    // hash table item structure
     struct Item
     {
         KeyType key;
         ValType val;
         Item* next;
-        Item(KeyType* k, ValType* v) { key = k; val = v; next = 0; }
+        Item(const KeyType& k, const ValType& v) { key = k; val = v; next = nullptr; }
     };
+
+public:
+    // constructor/destructor
+    ConcurrentHashTable(size_t capacity = 31, float load_factor = 0.5);
+    ~ConcurrentHashTable();
+
+    // data access methods
+    size_t size() const { return m_size; }
+    ValType& at(const KeyType &key);
+    void insert(const KeyType& key, const ValType& val);
+    void erase(const KeyType& key);
+    void clear();
+    HashTableValue<KeyType, ValType>& operator [](const KeyType &key)
+    {
+        printf("HashTableValue::operator []\r\n");
+        return HashTableValue<KeyType, ValType>(this, &key);
+    }
 
     // data
     Item** m_items;
     size_t m_size;
     size_t m_capacity;
-    double m_load_factor;
+    float m_load_factor;
 
     // rehash
     void rehash();
@@ -67,7 +77,7 @@ private:
 
 // constructor
 template <class KeyType, class ValType>
-ConcurrentHashTable<KeyType, ValType>::ConcurrentHashTable(size_t capacity, double load_factor)
+ConcurrentHashTable<KeyType, ValType>::ConcurrentHashTable(size_t capacity, float load_factor)
 {
     m_items = new Item*[capacity];
     for (size_t i = 0; i < capacity; ++i)
@@ -97,24 +107,21 @@ template <class KeyType, class ValType>
 ValType& ConcurrentHashTable<KeyType, ValType>::at(const KeyType &key)
 {
     // get hash code
-    std::tr1::hash<KeyType> hash_func;
+    std::hash<KeyType> hash_func;
     size_t hash_code = hash_func(key) % m_capacity;
 
     // get item
     Item* item = m_items[hash_code];
-    if (item)
+    if (!item)
+        throw std::out_of_range();
+
+    // find item with given key
+    while (item)
     {
-        // find item with given key
-        while (item)
-        {
-            if (!item->key || !item->val)
-                throw std::exception("data corrupted");
+        if (item->key == key)
+            return item->val;
 
-            if (*(item->key) == key)
-                return *item->val;
-
-            item = item->next;
-        }
+        item = item->next;
     }
 
     return 0;
@@ -125,7 +132,7 @@ template <class KeyType, class ValType>
 void ConcurrentHashTable<KeyType, ValType>::insert(const KeyType& key, const ValType& val)
 {
     // get hash code
-    std::tr1::hash<KeyType> hash_func;
+    std::hash<KeyType> hash_func;
     size_t hash_code = hash_func(key) % m_capacity;
 
     // get item
@@ -169,7 +176,7 @@ template <class KeyType, class ValType>
 void ConcurrentHashTable<KeyType, ValType>::erase(const KeyType& key)
 {
     // get hash code
-    std::tr1::hash<KeyType> hash_func;
+    std::hash<KeyType> hash_func;
     size_t hash_code = hash_func(key) % m_capacity;
 
     // get item
