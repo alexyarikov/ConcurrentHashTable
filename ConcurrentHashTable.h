@@ -1,91 +1,59 @@
 #pragma once
 
+// Concurrent (thread safe) hash table class
+// If item with specified key not found exception will be thrown.
 template <class KeyType, class ValType>
 class ConcurrentHashTable
 {
-private:
-    // hash table value class, intended to implement hash table [] operator
-    // (to distinguish which action, either read or write, is performed under hashtable value)
-    template <class KeyType, class ValType>
-    class HashTableValue
-    {
-    public:
-        HashTableValue(ConcurrentHashTable<KeyType, ValType>* hash_table, const KeyType* key)
-        {
-            printf("HashTableValue\r\n");
-            m_hash_table = hash_table; m_key = key;
-        }
-        ~HashTableValue()
-        {
-            printf("~HashTableValue\r\n");
-        }
-
-        operator ValType() const { ValueType& val = m_hash_table->at(*m_key); }
-        HashTableValue& operator = (ValType const& val)
-        {
-            printf("HashTableValue& operator\r\n");
-            m_hash_table->insert(*m_key, val); return *this;
-        }
-        // move constructor to avoid HashTableValue local object destruction in hashtable [] operator
-        //HashTableValue(HashTableValue&& other)
-        //{
-        //    cout << "move constructor\r\n" << endl;
-        //    m_hash_table = other.m_hash_table;  m_key = other.m_key;
-        //    other.m_hash_table = nullptr;       other.m_key = nullptr;
-        //}
-
-    private:
-        ConcurrentHashTable<KeyType, ValType>* m_hash_table;
-        const KeyType* m_key;
-    };
-
-    // hash table item structure
-    struct Item
-    {
-        KeyType key;
-        ValType val;
-        Item* next;
-        Item(const KeyType& k, const ValType& v) { key = k; val = v; next = nullptr; }
-    };
-
 public:
     // constructor/destructor
-    ConcurrentHashTable(size_t capacity = 31, float load_factor = 0.5);
+    ConcurrentHashTable(const size_t capacity = 31, const float max_load_factor = 0.5, const float capacity_step = 2.0);
     ~ConcurrentHashTable();
 
     // data access methods
-    size_t size() const { return m_size; }
+    size_t size() const { return _size; }
+    bool contains(const KeyType &key) const;
     ValType& at(const KeyType &key);
-    void insert(const KeyType& key, const ValType& val);
+    void insert(const KeyType& key, const ValType& val) { operator[](key) = val; };
     void erase(const KeyType& key);
     void clear();
-    HashTableValue<KeyType, ValType>& operator [](const KeyType &key)
+    ValType& operator [](const KeyType& key);
+
+private:
+    struct Item
     {
-        printf("HashTableValue::operator []\r\n");
-        return HashTableValue<KeyType, ValType>(this, &key);
+        KeyType _key;
+        ValType _val;
+        Item* _next;
+        Item(const KeyType& key) { _key = key; _next = nullptr; }
     }
 
-    // data
-    Item** m_items;
-    size_t m_size;
-    size_t m_capacity;
-    float m_load_factor;
+    Item** _items;
+    size_t _size;
+    size_t _capacity;
+    float _max_load_factor;
+    float _capacity_step;
+    mutable std::shared_mutex _rehash_lock;         // rehashing mutex is used to lock the whole hashtable while rehashing
+    mutable std::shared_mutex _hashtable_lock;      // hashtable mutex is used to lock all items while insert/delete operations
+    std::vector<std::shared_mutex> _items_locks;    // items locks are used to lock particular item
 
-    // rehash
+    bool at(const KeyType& key, Item** item_pptr) const;
     void rehash();
 };
 
 // constructor
 template <class KeyType, class ValType>
-ConcurrentHashTable<KeyType, ValType>::ConcurrentHashTable(size_t capacity, float load_factor)
+ConcurrentHashTable<KeyType, ValType>::ConcurrentHashTable(const size_t capacity, const float max_load_factor, const float capacity_step) :
+    _size(0),
+    _capacity(capacity),
+    _max_load_factor(max_load_factor),
+    _capacity_step(capacity_step),
+    _items_locks(nullptr),
+    _items_locks_size(0)
 {
-    m_items = new Item*[capacity];
-    for (size_t i = 0; i < capacity; ++i)
-        m_items[i] = 0;
-
-    m_size = 0;
-    m_capacity = capacity;
-    m_load_factor = load_factor;
+    _items = new Item*[_capacity];
+    for (size_t i = 0; i < _capacity; ++i)
+        _items[i] = nullptr;
 }
 
 // destructor
@@ -93,68 +61,66 @@ template <class KeyType, class ValType>
 ConcurrentHashTable<KeyType, ValType>::~ConcurrentHashTable()
 {
     // free hash table items
-    for (size_t i = 0; i < m_capacity; ++i)
+    for (size_t i = 0; i < _capacity; ++i)
     {
-        if (m_items[i])
-            delete m_items[i];
+        if (_items[i])
+            delete _items[i];
     }
 
-    delete[] m_items;
+    delete[] _items;
+}
+
+// checks whether item with specified key exists
+template <class KeyType, class ValType>
+bool ConcurrentHashTable<KeyType, ValType>::contains(const KeyType &key) const
+{
+    Item* dummy;
+    return at(key, &dummy);
 }
 
 // get item by key
 template <class KeyType, class ValType>
 ValType& ConcurrentHashTable<KeyType, ValType>::at(const KeyType &key)
 {
-    // get hash code
-    std::hash<KeyType> hash_func;
-    size_t hash_code = hash_func(key) % m_capacity;
-
-    // get item
-    Item* item = m_items[hash_code];
-    if (!item)
-        throw std::out_of_range();
-
-    // find item with given key
-    while (item)
-    {
-        if (item->key == key)
-            return item->val;
-
-        item = item->next;
-    }
-
-    return 0;
+    Item* item;
+    if (at(key, &item))
+        return item->val;
+    else
+        throw std::out_of_range("Key not found");
 }
 
-// insert item
+// get item value by key, insert a new default constructed item if key not found
 template <class KeyType, class ValType>
-void ConcurrentHashTable<KeyType, ValType>::insert(const KeyType& key, const ValType& val)
+ValType& ConcurrentHashTable<KeyType, ValType>::operator [](const KeyType& key)
 {
+    // rehash if load factor is exceeded
+    if (_size / _capacity > _max_load_factor)
+        rehash();
+
     // get hash code
     std::hash<KeyType> hash_func;
-    size_t hash_code = hash_func(key) % m_capacity;
+    size_t hash_code = hash_func(key) % _capacity;
 
     // get item
-    Item* item = m_items[hash_code];
+    Item* item = _items[hash_code];
     if (item)
     {
         // find item with given key, update value if found
         while (item)
         {
             if (item->key == key)
-            {
-                // found, update value
-                item->val = val;
-                return;
-            }
+                break;
 
-            // end of chain reached and given key isn't found
-            // put a new item in the tail of chain
             if (!item->next)
             {
-                item->next = new Item(key, val);
-                m_size++;
+                // end of chain reached and given key isn't found, put a new item in the tail of chain
+                item->next = new Item(key);
+                item = item->next;
+                _size++;
+
+                _items_locks[_items_locks++] = new std::shared_mutex();
+
+                break;
             }
 
             item = item->next;
@@ -162,13 +128,14 @@ void ConcurrentHashTable<KeyType, ValType>::insert(const KeyType& key, const Val
     }
     else
     {
-        m_items[hash_code] = new Item(key, val);
-        m_size++;
+        // there are no items with given key, insert a new one
+        item = new Item(key);
+        _items[hash_code] = item;
+        _items_locks[_items_locks++] = new std::shared_mutex();
+        _size++;
     }
 
-    // rehash if load factor is exceeded
-    if (m_size / m_capacity > m_load_factor)
-        rehash();
+    return item->val;
 }
 
 // delete item
@@ -177,10 +144,10 @@ void ConcurrentHashTable<KeyType, ValType>::erase(const KeyType& key)
 {
     // get hash code
     std::hash<KeyType> hash_func;
-    size_t hash_code = hash_func(key) % m_capacity;
+    size_t hash_code = hash_func(key) % _capacity;
 
     // get item
-    Item* item = m_items[hash_code];
+    Item* item = _items[hash_code];
     if (item)
     {
         // find item with given key, delete if found
@@ -193,10 +160,10 @@ void ConcurrentHashTable<KeyType, ValType>::erase(const KeyType& key)
                 if (prev)
                     prev->next = item->next;
                 else
-                    m_items[hash_code] = 0;
+                    _items[hash_code] = 0;
 
                 delete item;
-                m_size--;
+                _size--;
                 return;
             }
 
@@ -210,20 +177,79 @@ void ConcurrentHashTable<KeyType, ValType>::erase(const KeyType& key)
 template <class KeyType, class ValType>
 void ConcurrentHashTable<KeyType, ValType>::clear()
 {
-    for (size_t i = 0; i < m_size; ++i)
+    for (size_t i = 0; i < _size; ++i)
     {
-        if (m_items[i])
+        if (_items[i])
         {
-            delete m_items[i];
-            m_items[i] = 0;
+            delete _items[i];
+            _items[i] = 0;
         }
     }
 
-    m_size = 0;
+    _size = 0;
+}
+
+// get item by key
+template <class KeyType, class ValType>
+bool ConcurrentHashTable<KeyType, ValType>::at(const KeyType &key, Item** item_pptr) const
+{
+    if (!item_pptr)
+        throw std::invalid_argument("ConcurrentHashTable<KeyType, ValType>::at: invalid item provided");
+
+    // lock the whole hashtable while rehashing
+    std::shared_lock<std::shared_mutex> lock(_lock);
+
+    // get hash code
+    std::hash<KeyType> hash_func;
+    size_t hash_code = hash_func(key) % _capacity;
+
+    // get item
+    Item* item = _items[hash_code];
+
+    // find item with given key
+    while (item)
+    {
+        if (item->key == key)
+        {
+            *item_pptr = item;
+            return true;
+        }
+
+        item = item->next;
+    }
+
+    *item_pptr = nullptr;
+    return false;
 }
 
 // rehash
 template <class KeyType, class ValType>
 void ConcurrentHashTable<KeyType, ValType>::rehash()
 {
+    // lock the whole hashtable while rehashing
+    std::unique_lock<std::shared_mutex> lock(_lock);
+
+    // save old capacity and data
+    size_t old_capacity = _capacity;
+    Item** old_data = _items;
+
+    // clear size, increase capacity and allocate a new hash table
+    _size = 0;
+    _capacity *= _capacity_step;
+    _items = new Item*[_capacity];
+
+    // copy elements with freeing old items
+    for (size_t i = 0; i < old_capacity; ++i)
+    {
+        Item* old_item = old_items[i];
+        while (old_item)
+        {
+            insert(old_item->key, old_item->val);
+            delete old_item;
+            old_item = old_item->next;
+        }
+    }
+
+    // free old items
+    delete[] items;
 }
