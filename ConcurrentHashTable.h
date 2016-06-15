@@ -13,8 +13,8 @@ private:
     {
     public:
         HashTableValue(ConcurrentHashTable<KeyType, ValType>& hash_table, const KeyType& key) : _hash_table(hash_table), _key(key) {}
-        operator ValType() const                        { return _hash_table.at(_key);                 }
-        HashTableValue& operator = (const ValType& val) { std::pair<KeyType, ValType> p(_key, val); _hash_table.insert(p); return *this; }
+        operator ValType() const                        { return _hash_table.at(_key);                   }
+        HashTableValue& operator = (const ValType& val) { _hash_table.insert({_key, val}); return *this; }
 
     private:
         ConcurrentHashTable& _hash_table;
