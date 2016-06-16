@@ -30,10 +30,10 @@ public:
     ~ConcurrentHashTable() noexcept;
 
     // data access methods
-    size_t size() const  noexcept { return _size; }
+    size_t size() const noexcept { return _size; }
     bool contains(const KeyType &key) const noexcept;
     const ValType& at(const KeyType &key);
-    void insert(const std::pair<KeyType, ValType>& val);
+    void insert(const std::pair<KeyType, ValType>& val) noexcept;
     void erase(const KeyType& key) noexcept;
     void clear() noexcept;
     HashTableValue<KeyType, ValType> operator [](const KeyType& key) noexcept { return HashTableValue<KeyType, ValType>(*this, key); }
@@ -47,16 +47,17 @@ private:
         Item(const KeyType& key, const ValType& val) noexcept : _key(key), _val(val), _next(nullptr) {}
     };
 
-    Item** _items;
-    size_t _size = 0;
-    size_t _capacity;
-    float _max_load_factor;
-    float _capacity_step;
-    float _lock_factor;
-    mutable std::shared_mutex _global_mutex;
-    mutable std::deque<std::shared_mutex> _items_mutexes;
-    bool _rehashing = false;
+    Item** _items;                                          // hashtable items
+    size_t _size = 0;                                       // hashtable items number
+    size_t _capacity;                                       // hashtable capacity
+    float _max_load_factor;                                 // hashtable maximal load factor
+    float _capacity_step;                                   // capacity increase coefficient
+    float _lock_factor;                                     // hashtable items number to item mutexes number ratio
+    mutable std::shared_mutex _global_mutex;                // global entire hashtable level mutex 
+    mutable std::deque<std::shared_mutex> _items_mutexes;   // items mutexes collection to lock hashtable on particular item level
+    bool _rehashing = false;                                // flag to indicate rehashing process
 
+    // auxiliary methods
     size_t get_item_index(const KeyType& key) const noexcept;
     std::shared_mutex& get_item_mutex(const size_t item_idx) const noexcept;
     bool get_item(const size_t data_idx, const KeyType& key, Item**& item, Item*& prev_item) const noexcept;
@@ -148,7 +149,7 @@ const ValType& ConcurrentHashTable<KeyType, ValType>::at(const KeyType &key)
 
 // insert item
 template <class KeyType, class ValType>
-void ConcurrentHashTable<KeyType, ValType>::insert(const std::pair<KeyType, ValType>& val)
+void ConcurrentHashTable<KeyType, ValType>::insert(const std::pair<KeyType, ValType>& val) noexcept
 {
     // this function might be called during rehashing (it might be detected with _rehashing flag)
     // if this is the case, we shouldn't lock resources as there we are already under global lock
